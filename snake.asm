@@ -29,12 +29,12 @@ section .data
     white_color     db 27, '[37m', 0
     
     ; Game messages
-    title_msg       db 27, '[1;1H', 27, '[36m', 'SNAKE GAME', 27, '[0m', 10, 0
-    score_msg       db 27, '[2;1H', 'Score: ', 0
-    high_score_msg  db 27, '[3;1H', 'High Score: ', 0
-    game_over_msg   db 27, '[10;5H', 27, '[31m', 'GAME OVER!', 27, '[0m', 10, 0
-    restart_msg     db 27, '[12;5H', 'Press R to restart, Q to quit', 10, 0
-    controls_msg    db 27, '[19;1H', 'Controls: WASD or Arrow Keys, Q to quit', 0
+    title_string    db 'S N A K E   G A M E', 0
+    score_prefix    db 'Score: ', 0
+    high_score_prefix db 'High Score: ', 0
+    game_over_text  db 'G A M E   O V E R !', 0
+    restart_text    db 'Press R to restart, Q to quit', 0
+    controls_text   db 'Controls: WASD or Arrow Keys, Q to quit', 0
     
     ; File operations
     highscore_file  db '.snake_highscore', 0
@@ -55,6 +55,12 @@ section .bss
     score           resq 1
     high_score      resq 1
     game_running    resq 1
+    
+    ; Terminal dimensions
+    term_width      resq 1
+    term_height     resq 1
+    game_offset_x   resq 1
+    game_offset_y   resq 1
     
     ; Input buffer
     input_char      resb 1
@@ -87,6 +93,10 @@ _start:
     
     ; Setup terminal
     call setup_terminal
+    
+    ; Get terminal size and calculate centering
+    call get_terminal_size
+    call calculate_game_position
     
     ; Load high score
     call load_high_score
@@ -310,54 +320,79 @@ clear_screen_func:
 
 ; Draw the game
 draw_game:
-    ; Draw title and scores
+    ; Draw title and scores (centered)
+    mov rbx, [game_offset_y]   ; start at calculated offset
+    mov rcx, [game_offset_x]
+    add rcx, 2                 ; slight indent for title
+    call set_cursor_pos
+    
+    mov rsi, cyan_color
     call print_string
-    mov rsi, title_msg
+    mov rsi, title_string
+    call print_string
+    mov rsi, reset_color
     call print_string
     
-    mov rsi, score_msg
+    ; Draw score
+    inc rbx
+    mov rcx, [game_offset_x]
+    call set_cursor_pos
+    mov rsi, score_prefix
     call print_string
     mov rax, [score]
     call print_number
     
-    mov rsi, high_score_msg
+    ; Draw high score  
+    mov rcx, [game_offset_x]
+    add rcx, 20                ; offset to right
+    call set_cursor_pos
+    mov rsi, high_score_prefix
     call print_string
     mov rax, [high_score]
     call print_number
     
     ; Draw game board
-    mov rbx, 0         ; y coordinate
+    inc rbx                    ; move to next line
+    mov r12, 0                 ; y coordinate
     
 draw_board_loop:
-    cmp rbx, BOARD_HEIGHT
+    cmp r12, BOARD_HEIGHT
     jge draw_board_done
     
-    ; Position cursor
-    push rbx
-    add rbx, 5         ; offset for title/score area
+    ; Position cursor with offset
+    mov rbx, [game_offset_y]
+    add rbx, r12
+    add rbx, 2                 ; account for title/score lines
+    mov rcx, [game_offset_x]
     call set_cursor_pos
-    pop rbx
     
-    mov rcx, 0         ; x coordinate
+    mov r13, 0                 ; x coordinate
     
 draw_row_loop:
-    cmp rcx, BOARD_WIDTH
+    cmp r13, BOARD_WIDTH
     jge draw_row_done
     
     ; Check what to draw at this position
+    mov rcx, r13               ; x position
+    mov rbx, r12               ; y position
     call get_cell_content
     call print_char
     
-    inc rcx
+    inc r13
     jmp draw_row_loop
     
 draw_row_done:
-    inc rbx
+    inc r12
     jmp draw_board_loop
     
 draw_board_done:
-    ; Draw controls
-    mov rsi, controls_msg
+    ; Draw controls (centered below game)
+    mov rbx, [game_offset_y]
+    add rbx, BOARD_HEIGHT
+    add rbx, 3                 ; spacing below game
+    mov rcx, [game_offset_x]
+    call set_cursor_pos
+    mov rsi, controls_text
     call print_string
     ret
 
@@ -529,7 +564,70 @@ quit_game:
 handle_input_done:
     ret
 
-; Get input (blocking)
+; Get terminal size using TIOCGWINSZ ioctl
+get_terminal_size:
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Allocate space for winsize struct (4 shorts = 8 bytes)
+    sub rsp, 8
+    
+    ; Get window size
+    mov rax, 16        ; sys_ioctl
+    mov rdi, 1         ; stdout
+    mov rsi, 0x5413    ; TIOCGWINSZ
+    mov rdx, rsp       ; winsize struct
+    syscall
+    
+    ; Extract dimensions
+    movzx rax, word [rsp]      ; ws_row (height)
+    mov [term_height], rax
+    movzx rax, word [rsp + 2]  ; ws_col (width)
+    mov [term_width], rax
+    
+    add rsp, 8         ; cleanup stack
+    
+    ; Set defaults if ioctl failed
+    cmp qword [term_height], 0
+    jne size_ok
+    mov qword [term_height], 24
+    mov qword [term_width], 80
+    
+size_ok:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; Calculate centered position for game
+calculate_game_position:
+    ; Calculate horizontal offset: (term_width - BOARD_WIDTH) / 2
+    mov rax, [term_width]
+    sub rax, BOARD_WIDTH
+    shr rax, 1         ; divide by 2
+    mov [game_offset_x], rax
+    
+    ; Calculate vertical offset: (term_height - BOARD_HEIGHT - 6) / 2
+    ; -6 accounts for title, score, and control lines
+    mov rax, [term_height]
+    sub rax, BOARD_HEIGHT
+    sub rax, 6
+    shr rax, 1         ; divide by 2
+    mov [game_offset_y], rax
+    
+    ; Ensure minimum offsets
+    cmp qword [game_offset_x], 0
+    jge x_offset_ok
+    mov qword [game_offset_x], 0
+    
+x_offset_ok:
+    cmp qword [game_offset_y], 0
+    jge y_offset_ok
+    mov qword [game_offset_y], 0
+    
+y_offset_ok:
+    ret
 get_input:
     mov rax, 0         ; sys_read
     mov rdi, 0         ; stdin
@@ -691,10 +789,25 @@ game_over:
 draw_game_over:
     call draw_game
     
-    mov rsi, game_over_msg
+    ; Draw game over message (centered)
+    mov rbx, [game_offset_y]
+    add rbx, 8                 ; middle of game area
+    mov rcx, [game_offset_x]
+    add rcx, 2                 ; slight indent
+    call set_cursor_pos
+    
+    mov rsi, red_color
+    call print_string
+    mov rsi, game_over_text
+    call print_string
+    mov rsi, reset_color
     call print_string
     
-    mov rsi, restart_msg
+    ; Draw restart message
+    add rbx, 2                 ; two lines down
+    mov rcx, [game_offset_x]
+    call set_cursor_pos
+    mov rsi, restart_text
     call print_string
     
     ret
@@ -951,44 +1064,51 @@ print_number:
     pop rax
     ret
 
-; Set cursor position
+; Set cursor position (rbx = row, rcx = col, both 0-based)
 set_cursor_pos:
     push rax
     push rbx
     push rcx
     push rdx
+    push rsi
+    push rdi
     
-    ; Print escape sequence start
+    ; Build cursor position string manually
+    ; ESC[row;colH format
+    
+    ; Print ESC[
     mov rax, 1
     mov rdi, 1
-    mov rsi, cursor_pos_start
+    mov rsi, esc_bracket
     mov rdx, 2
     syscall
     
-    ; Print row number
+    ; Print row number (1-based)
     mov rax, rbx
-    inc rax            ; 1-based
+    inc rax
     call print_number
     
-    ; Print separator
+    ; Print semicolon
     mov rax, 1
     mov rdi, 1
-    mov rsi, cursor_pos_sep
+    mov rsi, semicolon
     mov rdx, 1
     syscall
     
-    ; Print column number  
+    ; Print column number (1-based)
     mov rax, rcx
-    inc rax            ; 1-based
+    inc rax
     call print_number
     
-    ; Print end
+    ; Print H
     mov rax, 1
     mov rdi, 1
-    mov rsi, cursor_pos_end
+    mov rsi, cursor_h
     mov rdx, 1
     syscall
     
+    pop rdi
+    pop rsi
     pop rdx
     pop rcx
     pop rbx
@@ -1023,3 +1143,6 @@ section .data
     cursor_pos_start    db 27, '['
     cursor_pos_sep      db ';'
     cursor_pos_end      db 'H'
+    esc_bracket         db 27, '['
+    semicolon           db ';'
+    cursor_h            db 'H'
