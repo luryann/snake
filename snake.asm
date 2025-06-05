@@ -333,16 +333,38 @@ draw_game:
     jmp draw_full_interface
     
 draw_minimal:
-    ; Just draw the game board without extras for very small terminals
+    ; Calculate minimal centering
+    push r14
+    push r15
+
+    ; Horizontal centering: (term_width - BOARD_WIDTH) / 2
+    mov r14, [term_width]
+    sub r14, BOARD_WIDTH
+    shr r14, 1
+    cmp r14, 0
+    jge minimal_x_ok
+    mov r14, 0
+minimal_x_ok:
+    ; Vertical centering: (term_height - BOARD_HEIGHT) / 2
+    mov r15, [term_height]
+    sub r15, BOARD_HEIGHT
+    shr r15, 1
+    cmp r15, 0
+    jge minimal_y_ok
+    mov r15, 0
+minimal_y_ok:
+
     mov r12, 0         ; y coordinate
-    
+
 draw_minimal_loop:
     cmp r12, BOARD_HEIGHT
     jge draw_minimal_done
     
-    ; Position at top-left
-    mov rbx, r12
-    mov rcx, 0
+    ; Set cursor position with centering
+    mov rbx, r15
+    add rbx, r12       ; centered Y position
+    mov rcx, r14
+    add rcx, r13       ; centered X position
     call set_cursor_pos
     
     mov r13, 0         ; x coordinate
@@ -364,6 +386,8 @@ draw_minimal_row_done:
     jmp draw_minimal_loop
     
 draw_minimal_done:
+    pop r15
+    pop r14
     ret
     
 draw_full_interface:
@@ -447,7 +471,7 @@ draw_board_done:
     ; Draw controls (only if there's space)
     mov rax, [game_offset_y]
     add rax, BOARD_HEIGHT
-    add rax, 4         ; space needed for controls
+    add rax, 2         ; only need 1 row below board for controls
     cmp rax, [term_height]
     jge skip_controls  ; skip if no room
     
@@ -457,7 +481,6 @@ draw_board_done:
     mov rcx, [game_offset_x]
     call set_cursor_pos
     mov rsi, controls_text
-    call print_string
     
 skip_controls:
     ret
@@ -668,9 +691,8 @@ size_ok:
 
 ; Calculate centered position for game
 calculate_game_position:
-    ; Total required width: BOARD_WIDTH + some padding
+    ; Total required width: BOARD_WIDTH
     mov rax, BOARD_WIDTH
-    add rax, 4          ; add padding for borders/spacing
     
     ; Check if terminal is wide enough
     cmp rax, [term_width]
@@ -688,9 +710,9 @@ too_narrow:
     mov qword [game_offset_x], 1
     
 check_height:
-    ; Total required height: BOARD_HEIGHT + title + score + controls + spacing
+    ; Total required height: BOARD_HEIGHT + 5 (title+score+controls+spacing)
     mov rax, BOARD_HEIGHT
-    add rax, 6          ; 2 for title/score, 2 for spacing, 2 for controls
+    add rax, 5
     
     ; Check if terminal is tall enough
     cmp rax, [term_height]
@@ -699,7 +721,7 @@ check_height:
     ; Calculate vertical offset: (term_height - total_height) / 2
     mov rax, [term_height]
     sub rax, BOARD_HEIGHT
-    sub rax, 6
+    sub rax, 5
     shr rax, 1         ; divide by 2
     mov [game_offset_y], rax
     jmp ensure_minimums
@@ -721,19 +743,18 @@ x_offset_ok:
     
 y_offset_ok:
     ; Ensure we don't go off screen
-    ; Max X offset = term_width - BOARD_WIDTH - 1
+    ; Max X offset = term_width - BOARD_WIDTH
     mov rax, [term_width]
     sub rax, BOARD_WIDTH
-    sub rax, 1
     cmp [game_offset_x], rax
     jle x_bounds_ok
     mov [game_offset_x], rax
     
 x_bounds_ok:
-    ; Max Y offset = term_height - BOARD_HEIGHT - 6
+    ; Max Y offset = term_height - BOARD_HEIGHT - 5
     mov rax, [term_height]
     sub rax, BOARD_HEIGHT
-    sub rax, 6
+    sub rax, 5
     cmp [game_offset_y], rax
     jle y_bounds_ok
     mov [game_offset_y], rax
