@@ -320,10 +320,62 @@ clear_screen_func:
 
 ; Draw the game
 draw_game:
-    ; Draw title and scores (centered)
-    mov rbx, [game_offset_y]   ; start at calculated offset
+    ; Check if we have enough space to draw everything
+    mov rax, [term_height]
+    cmp rax, 10         ; minimum height needed
+    jl draw_minimal
+    
+    mov rax, [term_width]
+    cmp rax, BOARD_WIDTH
+    jl draw_minimal
+    
+    ; Normal drawing with full interface
+    jmp draw_full_interface
+    
+draw_minimal:
+    ; Just draw the game board without extras for very small terminals
+    mov r12, 0         ; y coordinate
+    
+draw_minimal_loop:
+    cmp r12, BOARD_HEIGHT
+    jge draw_minimal_done
+    
+    ; Position at top-left
+    mov rbx, r12
+    mov rcx, 0
+    call set_cursor_pos
+    
+    mov r13, 0         ; x coordinate
+    
+draw_minimal_row:
+    cmp r13, BOARD_WIDTH
+    jge draw_minimal_row_done
+    
+    mov rcx, r13
+    mov rbx, r12
+    call get_cell_content
+    call print_char
+    
+    inc r13
+    jmp draw_minimal_row
+    
+draw_minimal_row_done:
+    inc r12
+    jmp draw_minimal_loop
+    
+draw_minimal_done:
+    ret
+    
+draw_full_interface:
+    ; Draw title (centered above game board)
+    mov rbx, [game_offset_y]
     mov rcx, [game_offset_x]
-    add rcx, 2                 ; slight indent for title
+    
+    ; Center title within game width
+    mov rax, BOARD_WIDTH
+    sub rax, 19        ; length of "S N A K E   G A M E"
+    shr rax, 1
+    add rcx, rax
     call set_cursor_pos
     
     mov rsi, cyan_color
@@ -333,48 +385,54 @@ draw_game:
     mov rsi, reset_color
     call print_string
     
-    ; Draw score
-    inc rbx
+    ; Draw score and high score on same line
+    mov rbx, [game_offset_y]
+    inc rbx            ; next line
     mov rcx, [game_offset_x]
     call set_cursor_pos
+    
     mov rsi, score_prefix
     call print_string
     mov rax, [score]
     call print_number
     
-    ; Draw high score  
+    ; Calculate position for high score (right side of game area)
     mov rcx, [game_offset_x]
-    add rcx, 20                ; offset to right
+    add rcx, BOARD_WIDTH
+    sub rcx, 15        ; approximate width of "High Score: XXX"
     call set_cursor_pos
+    
     mov rsi, high_score_prefix
     call print_string
     mov rax, [high_score]
     call print_number
     
+    ; Add blank line before game board
+    inc rbx
+    
     ; Draw game board
-    inc rbx                    ; move to next line
-    mov r12, 0                 ; y coordinate
+    mov r12, 0         ; y coordinate
     
 draw_board_loop:
     cmp r12, BOARD_HEIGHT
     jge draw_board_done
     
-    ; Position cursor with offset
+    ; Position cursor with calculated offsets
     mov rbx, [game_offset_y]
     add rbx, r12
-    add rbx, 2                 ; account for title/score lines
+    add rbx, 2         ; account for title and score lines
     mov rcx, [game_offset_x]
     call set_cursor_pos
     
-    mov r13, 0                 ; x coordinate
+    mov r13, 0         ; x coordinate
     
 draw_row_loop:
     cmp r13, BOARD_WIDTH
     jge draw_row_done
     
-    ; Check what to draw at this position
-    mov rcx, r13               ; x position
-    mov rbx, r12               ; y position
+    ; Get cell content and draw
+    mov rcx, r13       ; x position
+    mov rbx, r12       ; y position
     call get_cell_content
     call print_char
     
@@ -386,14 +444,22 @@ draw_row_done:
     jmp draw_board_loop
     
 draw_board_done:
-    ; Draw controls (centered below game)
+    ; Draw controls (only if there's space)
+    mov rax, [game_offset_y]
+    add rax, BOARD_HEIGHT
+    add rax, 4         ; space needed for controls
+    cmp rax, [term_height]
+    jge skip_controls  ; skip if no room
+    
     mov rbx, [game_offset_y]
     add rbx, BOARD_HEIGHT
-    add rbx, 3                 ; spacing below game
+    add rbx, 2         ; spacing below game
     mov rcx, [game_offset_x]
     call set_cursor_pos
     mov rsi, controls_text
     call print_string
+    
+skip_controls:
     ret
 
 ; Get content for cell at position (rcx, rbx)
@@ -602,21 +668,48 @@ size_ok:
 
 ; Calculate centered position for game
 calculate_game_position:
+    ; Total required width: BOARD_WIDTH + some padding
+    mov rax, BOARD_WIDTH
+    add rax, 4          ; add padding for borders/spacing
+    
+    ; Check if terminal is wide enough
+    cmp rax, [term_width]
+    jg too_narrow
+    
     ; Calculate horizontal offset: (term_width - BOARD_WIDTH) / 2
     mov rax, [term_width]
     sub rax, BOARD_WIDTH
     shr rax, 1         ; divide by 2
     mov [game_offset_x], rax
+    jmp check_height
     
-    ; Calculate vertical offset: (term_height - BOARD_HEIGHT - 6) / 2
-    ; -6 accounts for title, score, and control lines
+too_narrow:
+    ; Terminal too narrow, use minimal offset
+    mov qword [game_offset_x], 1
+    
+check_height:
+    ; Total required height: BOARD_HEIGHT + title + score + controls + spacing
+    mov rax, BOARD_HEIGHT
+    add rax, 6          ; 2 for title/score, 2 for spacing, 2 for controls
+    
+    ; Check if terminal is tall enough
+    cmp rax, [term_height]
+    jg too_short
+    
+    ; Calculate vertical offset: (term_height - total_height) / 2
     mov rax, [term_height]
     sub rax, BOARD_HEIGHT
     sub rax, 6
     shr rax, 1         ; divide by 2
     mov [game_offset_y], rax
+    jmp ensure_minimums
     
-    ; Ensure minimum offsets
+too_short:
+    ; Terminal too short, use minimal offset
+    mov qword [game_offset_y], 1
+    
+ensure_minimums:
+    ; Ensure minimum offsets (never negative)
     cmp qword [game_offset_x], 0
     jge x_offset_ok
     mov qword [game_offset_x], 0
@@ -627,6 +720,36 @@ x_offset_ok:
     mov qword [game_offset_y], 0
     
 y_offset_ok:
+    ; Ensure we don't go off screen
+    ; Max X offset = term_width - BOARD_WIDTH - 1
+    mov rax, [term_width]
+    sub rax, BOARD_WIDTH
+    sub rax, 1
+    cmp [game_offset_x], rax
+    jle x_bounds_ok
+    mov [game_offset_x], rax
+    
+x_bounds_ok:
+    ; Max Y offset = term_height - BOARD_HEIGHT - 6
+    mov rax, [term_height]
+    sub rax, BOARD_HEIGHT
+    sub rax, 6
+    cmp [game_offset_y], rax
+    jle y_bounds_ok
+    mov [game_offset_y], rax
+    
+y_bounds_ok:
+    ; Final safety check - ensure offsets are not negative
+    cmp qword [game_offset_x], 0
+    jge final_x_ok
+    mov qword [game_offset_x], 0
+    
+final_x_ok:
+    cmp qword [game_offset_y], 0
+    jge final_y_ok
+    mov qword [game_offset_y], 0
+    
+final_y_ok:
     ret
 get_input:
     mov rax, 0         ; sys_read
